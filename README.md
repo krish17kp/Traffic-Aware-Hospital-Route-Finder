@@ -16,6 +16,8 @@ This project finds suitable hospital routes from a user location using a road ne
 pip install osmnx networkx geopandas folium shapely streamlit pandas
 ```
 
+For Streamlit Cloud deployment, the repository includes `requirements.txt` and `runtime.txt`.
+
 ## How to Run
 
 ```bash
