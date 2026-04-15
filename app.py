@@ -40,7 +40,7 @@ def get_cached_weighted_graph(
     lat: float, lon: float, radius: int, road_path: str, density_col: str, hour: int
 ):
     """Load and weight the local road graph."""
-    graph = load_road_graph(lat, lon, radius)
+    graph = load_road_graph(lat, lon, radius, road_path)
     roads = load_traffic_data(road_path, lat, lon)
     if len(roads) > 0 and density_col in roads.columns:
         roads = normalise_density(roads, density_col)
@@ -201,6 +201,11 @@ if run_btn:
     except FileNotFoundError as exc:
         progress.empty()
         st.error(str(exc))
+        st.stop()
+    except ValueError as exc:
+        progress.empty()
+        st.error(str(exc))
+        st.info("If you are testing Andhra Pradesh locations, make sure the road file also contains Andhra Pradesh roads.")
         st.stop()
     except Exception as exc:
         progress.empty()

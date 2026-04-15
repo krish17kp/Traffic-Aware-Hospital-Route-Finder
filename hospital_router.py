@@ -20,7 +20,7 @@ import geopandas as gpd
 import pandas as pd
 import folium
 from folium.plugins import HeatMap
-from shapely.geometry import Point, MultiPolygon
+from shapely.geometry import Point, MultiPolygon, LineString, MultiLineString
 
 warnings.filterwarnings("ignore")
 ox.settings.use_cache = True
@@ -166,7 +166,54 @@ def normalise_density(roads_gdf: gpd.GeoDataFrame, col: str) -> gpd.GeoDataFrame
 # GRAPH LOADING
 # ──────────────────────────────────────────────
 
-def load_road_graph(lat: float, lon: float, radius_m: int) -> nx.MultiDiGraph:
+def _build_graph_from_roads(roads: gpd.GeoDataFrame) -> nx.MultiDiGraph:
+    """Build a simple local road graph from line geometries."""
+    graph = nx.MultiDiGraph()
+    graph.graph["crs"] = "epsg:4326"
+
+    for _, row in roads.iterrows():
+        geometry = row.geometry
+        if geometry is None or geometry.is_empty:
+            continue
+
+        if isinstance(geometry, LineString):
+            lines = [geometry]
+        elif isinstance(geometry, MultiLineString):
+            lines = list(geometry.geoms)
+        else:
+            continue
+
+        highway = row.get("highway", "unclassified")
+        if isinstance(highway, list):
+            highway = highway[0]
+        density = row.get("density_norm", row.get("density", 0.0))
+
+        for line in lines:
+            coords = list(line.coords)
+            for (x1, y1), (x2, y2) in zip(coords, coords[1:]):
+                u = f"{y1:.6f},{x1:.6f}"
+                v = f"{y2:.6f},{x2:.6f}"
+                if u not in graph:
+                    graph.add_node(u, x=float(x1), y=float(y1))
+                if v not in graph:
+                    graph.add_node(v, x=float(x2), y=float(y2))
+
+                length_m = ox.distance.great_circle(float(y1), float(x1), float(y2), float(x2))
+                attrs = {
+                    "length": float(length_m),
+                    "highway": highway or "unclassified",
+                    "density": float(density) if pd.notna(density) else 0.0,
+                }
+                graph.add_edge(u, v, **attrs)
+                graph.add_edge(v, u, **attrs)
+
+    if graph.number_of_nodes() == 0 or graph.number_of_edges() == 0:
+        raise ValueError("No usable road segments were found in the road dataset for this area.")
+    return graph
+
+
+def load_road_graph(lat: float, lon: float, radius_m: int,
+                    road_geojson: Optional[str] = None) -> nx.MultiDiGraph:
     """
     Download OSM road network as a weighted directed multigraph.
     Filters to main road types only.
@@ -182,12 +229,32 @@ def load_road_graph(lat: float, lon: float, radius_m: int) -> nx.MultiDiGraph:
         print(f"   Cached graph loaded: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
         return G
 
+    if road_geojson:
+        try:
+            print("Loading road network from local road dataset...")
+            roads = load_traffic_data(road_geojson, lat, lon, buffer=max(radius_m / 111320.0, 0.05))
+            G = _build_graph_from_roads(roads)
+            ox.save_graphml(G, cache_path)
+            print(f"   Local graph loaded: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
+            return G
+        except Exception as exc:
+            print(f"   Local road dataset could not be used: {exc}")
+
     cf = '["highway"~"motorway|trunk|primary|secondary|tertiary|residential"]'
     print("Downloading road network from OpenStreetMap...")
-    G = ox.graph_from_point((lat, lon), dist=radius_m, custom_filter=cf)
-    ox.save_graphml(G, cache_path)
-    print(f"   Graph loaded: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
-    return G
+    try:
+        G = ox.graph_from_point((lat, lon), dist=radius_m, custom_filter=cf)
+        ox.save_graphml(G, cache_path)
+        print(f"   Graph loaded: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
+        return G
+    except Exception as exc:
+        if not road_geojson:
+            raise
+        print(f"   OpenStreetMap download failed: {exc}")
+        raise ValueError(
+            "Road graph could not be loaded. Use a road dataset for the selected area "
+            "or try again when the OpenStreetMap server is reachable."
+        ) from exc
 
 
 def load_traffic_data(road_geojson: str, lat: float, lon: float,
